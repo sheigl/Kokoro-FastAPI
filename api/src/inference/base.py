@@ -122,6 +122,13 @@ class BaseModelBackend(ModelBackend):
         if self._model is not None:
             del self._model
             self._model = None
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                torch.cuda.synchronize()
+
+        # Clear CUDA cache if available
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+
+        # Clear XPU cache if available
+        if hasattr(torch, 'xpu') and torch.xpu.is_available():
+            torch.xpu.empty_cache()
+            torch.xpu.synchronize()

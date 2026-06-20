@@ -32,7 +32,20 @@ class ModelManager:
 
     def _determine_device(self) -> str:
         """Determine device based on settings."""
-        return "cuda" if settings.use_gpu else "cpu"
+        if not settings.use_gpu:
+            return "cpu"
+
+        if settings.device_type:
+            return settings.device_type
+
+        # Auto-detect (priority: MPS > CUDA > XPU > CPU)
+        if torch.backends.mps.is_available():
+            return "mps"
+        elif torch.cuda.is_available():
+            return "cuda"
+        elif hasattr(torch, 'xpu') and torch.xpu.is_available():
+            return "xpu"
+        return "cpu"
 
     async def initialize(self) -> None:
         """Initialize Kokoro V1 backend."""
@@ -171,8 +184,16 @@ Model files not found! You need to download the Kokoro V1 model:
             if self._backend is not None:
                 self._backend.unload()
                 self._backend = None
+        # Clear CUDA cache if available
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+
+        # Clear XPU cache if available
+        if hasattr(torch, 'xpu') and torch.xpu.is_available():
+            torch.xpu.empty_cache()
+            torch.xpu.synchronize()
+
         logger.info("Model unloaded from GPU memory")
 
     @property

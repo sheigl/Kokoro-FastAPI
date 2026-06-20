@@ -1,0 +1,34 @@
+name: kokoro-fastapi-xpu
+services:
+  kokoro-tts:
+    # image: ghcr.io/remsky/kokoro-fastapi-xpu:v${VERSION}
+    build:
+      context: ../..
+      dockerfile: docker/xpu/Dockerfile
+    devices:
+      - /dev/dri
+    group_add:
+      # NOTE: These groups are the group ids for video and render.
+      # Numbers can be found via running: getent group $GROUP_NAME | cut -d: -f3
+      # On Ubuntu 24.04: video=44, render=107
+      # On other distros render may differ (e.g. 993). Verify with `getent group render`.
+      - 44       # video group (DRI devices)
+      - 107      # render group (Ubuntu 24.04; verify on your system)
+    restart: 'always'
+    # Named volume persists the SYCL kernel cache at /home/appuser/.cache/sycl.
+    # Survives `docker compose down`; `docker compose down -v` clears it. Inspect
+    # contents with `docker volume inspect kokoro-fastapi-xpu_sycl_cache`.
+    volumes:
+      - sycl_cache:/home/appuser/.cache/sycl
+    ports:
+      - 8880:8880
+    environment:
+      - USE_GPU=true
+      - DEVICE="xpu"
+      - SYCL_CACHE_DIR=/home/appuser/.cache/sycl
+      - PYTHONUNBUFFERED=1
+      - API_LOG_LEVEL=DEBUG
+      - DOWNLOAD_MODEL=true
+
+volumes:
+  sycl_cache:

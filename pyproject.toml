@@ -3,7 +3,7 @@ name = "kokoro-fastapi"
 version = "0.6.0-rc1"
 description = "FastAPI TTS Service"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.12"
 dependencies = [
     # Core dependencies
     "fastapi==0.115.6",
@@ -59,6 +59,10 @@ rocm = [
     "torch==2.8.0+rocm6.4",
     "pytorch-triton-rocm>=3.2.0",
 ]
+xpu = [
+    "torch==2.8.0+xpu",
+    "pytorch-triton-xpu>=3.4.0",
+]
 test = [
     "pytest==8.3.5",
     "pytest-cov==6.0.0",
@@ -79,6 +83,7 @@ conflicts = [
         { extra = "gpu" },
         { extra = "gpu-cu128" },
         { extra = "rocm" },
+        { extra = "xpu" },
     ],
 ]
 override-dependencies = [
@@ -93,9 +98,13 @@ torch = [
     { index = "pytorch-cu128", extra = "gpu-cu128", marker = "platform_machine == 'x86_64'" },
     { index = "pytorch-cu129", extra = "gpu-cu128", marker = "platform_machine == 'aarch64'" },
     { index = "pytorch-rocm", extra = "rocm" },
+    { index = "pytorch-xpu", extra = "xpu" },
 ]
 pytorch-triton-rocm = [
     { index = "pytorch-rocm", extra = "rocm" },
+]
+pytorch-triton-xpu = [
+    { index = "pytorch-xpu", extra = "xpu" },
 ]
 
 [[tool.uv.index]]
@@ -121,6 +130,11 @@ explicit = true
 [[tool.uv.index]]
 name = "pytorch-rocm"
 url = "https://download.pytorch.org/whl/rocm6.4"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-xpu"
+url = "https://download.pytorch.org/whl/xpu"
 explicit = true
 
 [build-system]

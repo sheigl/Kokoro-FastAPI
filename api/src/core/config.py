@@ -41,9 +41,9 @@ class Settings(BaseSettings):
         False  # Whether to allow saving combined voices locally
     )
 
-    # Container absolute paths
-    model_dir: str = "/app/api/src/models"  # Absolute path in container
-    voices_dir: str = "/app/api/src/voices/v1_0"  # Absolute path in container
+    # Paths relative to api directory (works in both container and local)
+    model_dir: str = "src/models"
+    voices_dir: str = "src/voices/v1_0"
 
     # Audio Settings
     sample_rate: int = 24000
@@ -91,11 +91,13 @@ class Settings(BaseSettings):
         if self.device_type:
             return self.device_type
 
-        # Auto-detect device
+        # Auto-detect device (priority: MPS > CUDA > XPU > CPU)
         if torch.backends.mps.is_available():
             return "mps"
         elif torch.cuda.is_available():
             return "cuda"
+        elif hasattr(torch, 'xpu') and torch.xpu.is_available():
+            return "xpu"
         return "cpu"
 
 
