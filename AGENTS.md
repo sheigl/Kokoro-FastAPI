@@ -618,3 +618,88 @@ Added full Intel XPU support across the codebase:
 **Note**: Task 6 (entrypoint.sh GPU warmup) was not applicable — the current entrypoint.sh is minimal; warmup logic lives in Python (`model_manager.initialize_with_warmup()`).
 
 **QA Result**: ✅ Passed — 139/139 tests (93 existing + 46 new XPU tests), zero regressions, all 6 acceptance criteria verified. Code Review: Approved.
+
+### 2026-06-21: XPU Docker Container — Working Build (intel/intel-extension-for-pytorch base)
+
+Switched XPU Dockerfile from `ubuntu:24.04` + manual Intel apt repo (which had package conflicts: `libigc2` vs `libigc1`, `libze-intel-gpu1` breaks `intel-level-zero-gpu`) to **`intel/intel-extension-for-pytorch:2.8.10-xpu`** base image.
+
+**Why the base image was necessary**:
+- The Intel image bundles PyTorch 2.8.0+xpu + IPEX 2.8.10+xpu + Level-Zero runtime all pre-built and version-matched.
+- Manually assembling the GPU stack on `ubuntu:24.04` caused apt conflicts between `libigc1` (old) and `libigc2` (new) and between `intel-level-zero-gpu` and `libze-intel-gpu1`.
+- Using `intel/oneapi-runtime:2025.3.1-0-devel-ubuntu24.04` had the same conflicts and shipped outdated GPU packages.
+
+**Key changes to `docker/xpu/Dockerfile`**:
+1. Base: `intel/intel-extension-for-pytorch:2.8.10-xpu` (Ubuntu 22.04, Python 3.11, torch 2.8.0+xpu pre-installed)
+2. **Intel apt repo (noble)** added to upgrade GPU packages to match Ubuntu 24.04 host driver — the base image ships jammy packages which are too old for a noble host. Uses `https://repositories.intel.com/gpu/ubuntu noble client`.
+3. `uv python install 3.11` — downloads a standalone Python from python-build-standalone because the base image's Python 3.11.0rc1 is **headless** (no `Python.h`), which breaks building `pyopenjtalk`.
+4. `pyopenjtalk` installed via `.venv/bin/python -m pip install --no-build-isolation` (not `uv pip`) because uv enforces strict metadata validation and rejects pyopenjtalk's `0.0.0` vs `0.4.1` version mismatch.
+5. `uv sync --extra xpu` installs torch into the venv from the pytorch-xpu index.
+
+**Key changes to `docker/xpu/docker-compose.yml`**:
+- `ipc: host` — required by Intel XPU containers for shared memory access.
+- `group_add: [44, 992]` — video=44 (standard), render=992 (host-specific; verify with `stat -c '%g' /dev/dri/renderD128`).
+- `/dev/dri/by-path` mount **not needed** (doesn't exist on this host).
+
+**Dockerfile pattern** (`docker/xpu/Dockerfile`):
+```dockerfile
+FROM intel/intel-extension-for-pytorch:2.8.10-xpu
+
+# Install build deps + upgrade GPU packages from noble repo to match 24.04 host
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl espeak-ng espeak-ng-data git nano wget libsndfile1 ffmpeg zstd \
+        g++ cmake make gnupg \
+    && curl -fsSL https://repositories.intel.com/gpu/intel-graphics.key \
+        | gpg --dearmor -o /usr/share/keyrings/intel-graphics.gpg && \
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/intel-graphics.gpg] \
+          https://repositories.intel.com/gpu/ubuntu noble client" \
+        > /etc/apt/sources.list.d/intel-gpu.list && \
+    apt-get update && apt-get install -y --no-install-recommends \
+        libze1 libze-intel-gpu1 intel-opencl-icd libigdgmm12 libigc2 \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# uv for package management
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
+    && mv /root/.local/bin/uv /usr/local/bin/ \
+    && mv /root/.local/bin/uvx /usr/local/bin/
+
+# Non-root user with render group (GID must match host /dev/dri/renderD*)
+RUN useradd -m -u 1001 appuser \
+    && groupadd -g 992 render \
+    && usermod -aG video,render appuser
+
+# Install deps: standalone Python (has Python.h), pyopenjtalk via pip, then uv sync
+RUN uv python install 3.11 && \
+    uv venv --python 3.11 && \
+    uv pip install --python .venv pip setuptools wheel numpy cython && \
+    .venv/bin/python -m pip install --no-build-isolation pyopenjtalk unidic && \
+    uv sync --extra xpu
+```
+
+**Docker Compose pattern** (`docker/xpu/docker-compose.yml`):
+```yaml
+services:
+  kokoro-tts:
+    devices:
+      - /dev/dri
+    ipc: host                          # Required by Intel XPU containers
+    group_add:
+      - 44                             # video
+      - 992                            # render (verify: stat -c '%g' /dev/dri/renderD128)
+    volumes:
+      - sycl_cache:/home/appuser/.cache/sycl
+    environment:
+      - USE_GPU=true
+      - DEVICE=xpu
+      - SYCL_CACHE_DIR=/home/appuser/.cache/sycl
+```
+
+**Known Issues & Solutions**:
+1. **`Python.h: No such file or directory`** — Base image's Python 3.11.0rc1 has no dev headers. Fixed by `uv python install 3.11` (python-build-standalone includes headers).
+2. **`Package metadata version 0.0.0 does not match 0.4.1`** — uv rejects pyopenjtalk's broken metadata. Fixed by using `.venv/bin/python -m pip install --no-build-isolation` (pip doesn't validate metadata versions).
+3. **`Level Zero Initialization Error` / `XPU device count is zero`** — Container's GPU packages (jammy) too old for noble host driver. Fixed by adding Intel `noble` apt repo and upgrading `libze1`, `libze-intel-gpu1`, `intel-opencl-icd`, `libigdgmm12`, `libigc2`.
+4. **`groups: cannot find name for group ID 992`** — Cosmetic warning. Fixed by `groupadd -g 992 render` in Dockerfile.
+5. **`pyproject.toml` Python version** — Widened from `>=3.10,<3.12` to `>=3.10,<3.13` to support Python 3.11 used by the Intel base image.
+
+**Image size**: ~14GB (Intel base image is ~10GB + PyTorch + deps).
+
+**Verification**: `xpu-smi health -l` works inside container; `torch.xpu.is_available()` returns True.
