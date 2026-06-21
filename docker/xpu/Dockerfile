@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -5,8 +6,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PHONEMIZER_ESPEAK_DATA=/usr/share/espeak-ng-data \
     ESPEAK_DATA_PATH=/usr/share/espeak-ng-data
 
-# Install basic prerequisites needed to set up the Intel GPU apt repository.
-# ubuntu:24.04 is minimal and does not include curl, gpg, gnupg, or ca-certificates by default.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
@@ -15,38 +14,44 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Intel GPU apt repository + runtime dependencies + Python 3.12
 RUN curl -fsSL https://repositories.intel.com/gpu/intel-graphics.key \
         | gpg --dearmor -o /usr/share/keyrings/intel-graphics.gpg && \
     echo "deb [arch=amd64 signed-by=/usr/share/keyrings/intel-graphics.gpg] \
-          https://repositories.intel.com/gpu/ubuntu jammy client" \
+          https://repositories.intel.com/gpu/ubuntu noble client" \
         > /etc/apt/sources.list.d/intel-gpu.list && \
     apt-get update && apt-get install -y --no-install-recommends \
         libigdgmm12 \
         intel-opencl-icd \
+        libze1 \
+        libze-intel-gpu1 \
+        libigc2 \
         espeak-ng \
         espeak-ng-data \
         git \
         wget \
         nano \
+        make \
         g++ \
+        clang \
+        build-essential \
         cmake \
+        ninja-build \
+        python3.10 \
+        python3.10-dev \
+        python3.10-venv \
+        python3-setuptools \
         libsndfile1 \
         ffmpeg \
         zstd \
-        python3.12 \
-        python3.12-venv \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /usr/share/espeak-ng-data \
-    && ln -s /usr/lib/*/espeak-ng-data/* /usr/share/espeak-ng-data/
+    && ln -s /usr/lib/*/espeak-ng-data/* /usr/share/espeak-ng-data/ 2>/dev/null || true
 
-# Install UV package manager
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
     && mv /root/.local/bin/uv /usr/local/bin/ \
     && mv /root/.local/bin/uvx /usr/local/bin/
 
-# Create non-root user and set up directories
 RUN useradd -m -u 1001 appuser \
     && mkdir -p /app/api/src/models/v1_0 \
     && chown -R appuser:appuser /app
@@ -54,25 +59,18 @@ RUN useradd -m -u 1001 appuser \
 USER appuser
 WORKDIR /app
 
-# Copy dependency files
 COPY --chown=appuser:appuser pyproject.toml ./pyproject.toml
 
-ENV PHONEMIZER_ESPEAK_PATH=/usr/bin \
-    PHONEMIZER_ESPEAK_DATA=/usr/share/espeak-ng-data \
-    ESPEAK_DATA_PATH=/usr/share/espeak-ng-data
-
-# Install dependencies with XPU extras
-RUN uv venv --python 3.12 && \
+RUN uv venv --python 3.10 && \
+    uv pip install --python .venv pip setuptools wheel numpy && \
+    CMAKE_C_COMPILER=gcc CMAKE_CXX_COMPILER=g++ CMAKE_MAKE_PROGRAM=make uv pip install --python .venv --no-build-isolation pyopenjtalk unidic && \
     uv sync --extra xpu
 
-# Japanese support requires the UniDic dictionary (~526MB on disk) for fugashi/MeCab.
-# Enabled by default; set --build-arg INCLUDE_JAPANESE=false to skip and shave the image.
 ARG INCLUDE_JAPANESE=true
 RUN if [ "$INCLUDE_JAPANESE" = "true" ]; then \
         .venv/bin/python -m unidic download; \
     fi
 
-# Copy project files including models
 COPY --chown=appuser:appuser api ./api
 COPY --chown=appuser:appuser web ./web
 COPY --chown=appuser:appuser VERSION ./VERSION
@@ -80,20 +78,15 @@ COPY --chown=appuser:appuser docker/scripts/ ./
 
 RUN chmod +x ./entrypoint.sh
 
-# Pre-create SYCL cache dir so named-volume mounts inherit appuser ownership.
-# Without this, Docker creates the mount target as root:root and appuser (uid 1001)
-# cannot write to it on first run, causing silent cache misses and 30-60s latency.
 RUN mkdir -p /home/appuser/.cache/sycl
 
-# Set all environment variables in one go.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app:/app/api \
     PATH="/app/.venv/bin:$PATH" \
     UV_LINK_MODE=copy \
     USE_GPU=true \
     DOWNLOAD_MODEL=true \
-    DEVICE="xpu" \
+    DEVICE=xpu \
     SYCL_CACHE_DIR=/home/appuser/.cache/sycl
 
-# Run FastAPI server through entrypoint.sh
 CMD ["./entrypoint.sh"]

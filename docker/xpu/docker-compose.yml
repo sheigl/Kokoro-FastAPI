@@ -24,7 +24,7 @@ services:
       - 8880:8880
     environment:
       - USE_GPU=true
-      - DEVICE="xpu"
+      - DEVICE=xpu
       - SYCL_CACHE_DIR=/home/appuser/.cache/sycl
       - PYTHONUNBUFFERED=1
       - API_LOG_LEVEL=DEBUG
